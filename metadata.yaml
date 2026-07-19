@@ -19,3 +19,5 @@ help: |  # 插件的帮助信息
 version: v0.0.2
 author: stevessr
 repo: https://github.com/stevessr/astrbot_plugin_matrix_daily_analysis # 插件的仓库地址
+support_platforms:
+  - matrix
