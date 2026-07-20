@@ -61,9 +61,15 @@ class TopicAnalyzer(BaseAnalyzer):
             return ""
 
         # 提取文本消息
-        bot_matrix_id_set = {
-            str(matrix) for matrix in self.config_manager.get_bot_matrix_ids() if matrix
-        }
+        bot_matrix_id_set = (
+            {
+                str(matrix)
+                for matrix in self.config_manager.get_bot_matrix_ids()
+                if matrix
+            }
+            if self.config_manager.should_skip_history_bots()
+            else set()
+        )
         text_messages = []
         for i, msg in enumerate(messages):
             # 确保 msg 是字典类型，避免'str' object has no attribute 'get'错误
@@ -133,11 +139,22 @@ class TopicAnalyzer(BaseAnalyzer):
                     cleaned_text = cleaned_text.replace("\t", " ")
                     cleaned_text = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", cleaned_text)
 
-                    if self.config_manager.get_threading_enabled() and self.config_manager.get_thread_label_in_prompt():
-                        relation_type = str(msg.get("relation_type", "") or "").strip().lower()
-                        thread_root_id = str(msg.get("thread_root_id", "") or "").strip()
+                    if (
+                        self.config_manager.get_threading_enabled()
+                        and self.config_manager.get_thread_label_in_prompt()
+                    ):
+                        relation_type = (
+                            str(msg.get("relation_type", "") or "").strip().lower()
+                        )
+                        thread_root_id = str(
+                            msg.get("thread_root_id", "") or ""
+                        ).strip()
                         if relation_type == "m.thread" and thread_root_id:
-                            short_tid = thread_root_id[-8:] if len(thread_root_id) > 8 else thread_root_id
+                            short_tid = (
+                                thread_root_id[-8:]
+                                if len(thread_root_id) > 8
+                                else thread_root_id
+                            )
                             cleaned_text = f"[thread:{short_tid}] {cleaned_text}"
 
                     text_messages.append(
@@ -228,9 +245,9 @@ class TopicAnalyzer(BaseAnalyzer):
 
                 try:
                     # 确保数据格式正确
-                    topic_name = topic_data.get("topic", "").strip()
+                    topic_name = str(topic_data.get("topic", "") or "").strip()
                     contributors = topic_data.get("contributors", [])
-                    detail = topic_data.get("detail", "").strip()
+                    detail = str(topic_data.get("detail", "") or "").strip()
 
                     logger.debug(
                         f"话题数据 - 名称：{topic_name}, 参与者：{contributors}, 详情：{detail[:50]}..."
@@ -288,9 +305,15 @@ class TopicAnalyzer(BaseAnalyzer):
             return []
 
         text_messages = []
-        bot_matrix_id_set = {
-            str(matrix) for matrix in self.config_manager.get_bot_matrix_ids() if matrix
-        }
+        bot_matrix_id_set = (
+            {
+                str(matrix)
+                for matrix in self.config_manager.get_bot_matrix_ids()
+                if matrix
+            }
+            if self.config_manager.should_skip_history_bots()
+            else set()
+        )
 
         for i, msg in enumerate(messages):
             logger.debug(f"处理第 {i + 1} 条消息，类型：{type(msg)}")

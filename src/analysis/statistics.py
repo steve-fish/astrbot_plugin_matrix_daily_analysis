@@ -19,7 +19,11 @@ class UserAnalyzer:
         """分析用户活跃度"""
         # 获取机器人 matrix 号列表用于过滤
         bot_matrix_ids = self.config_manager.get_bot_matrix_ids()
-        bot_matrix_id_set = {str(matrix) for matrix in bot_matrix_ids if matrix}
+        bot_matrix_id_set = (
+            {str(matrix) for matrix in bot_matrix_ids if matrix}
+            if self.config_manager.should_skip_history_bots()
+            else set()
+        )
 
         user_stats = defaultdict(
             lambda: {
@@ -39,7 +43,9 @@ class UserAnalyzer:
             sender = msg.get("sender", {})
             if not isinstance(sender, dict):
                 continue
-            user_id = str(sender.get("user_id", ""))
+            user_id = str(sender.get("user_id", "") or "").strip()
+            if not user_id:
+                continue
 
             # 跳过机器人自己的消息，避免进入统计
             if bot_matrix_id_set and user_id in bot_matrix_id_set:
@@ -74,7 +80,7 @@ class UserAnalyzer:
                 if not isinstance(data, dict):
                     data = {}
                 if content.get("type") == "text":
-                    text = data.get("text", "")
+                    text = str(data.get("text", "") or "")
                     user_stats[user_id]["char_count"] += len(text)
                 elif content.get("type") == "face":
                     # matrix 基础表情
@@ -90,7 +96,7 @@ class UserAnalyzer:
                     user_stats[user_id]["emoji_count"] += 1
                 elif content.get("type") == "image":
                     # 检查是否是动画表情（通过 summary 字段判断）
-                    summary = data.get("summary", "")
+                    summary = str(data.get("summary", "") or "")
                     if "动画表情" in summary or "表情" in summary:
                         # 动画表情（以 image 形式发送）
                         user_stats[user_id]["emoji_count"] += 1
@@ -107,7 +113,11 @@ class UserAnalyzer:
         """获取最活跃的用户"""
         # 获取机器人 matrix 号列表用于过滤
         bot_matrix_ids = self.config_manager.get_bot_matrix_ids()
-        bot_matrix_id_set = {str(matrix) for matrix in bot_matrix_ids if matrix}
+        bot_matrix_id_set = (
+            {str(matrix) for matrix in bot_matrix_ids if matrix}
+            if self.config_manager.should_skip_history_bots()
+            else set()
+        )
 
         users = []
         for user_id, stats in user_analysis.items():

@@ -94,7 +94,9 @@ class PDFInstaller:
             PDFInstaller._install_status["error_message"] = None
 
             logger.info("启动后台任务安装 Chromium...")
-            install_task = asyncio.create_task(PDFInstaller._background_playwright_install())
+            install_task = asyncio.create_task(
+                PDFInstaller._background_playwright_install()
+            )
             PDFInstaller._install_task = install_task
             install_task.add_done_callback(PDFInstaller._handle_install_task_done)
 

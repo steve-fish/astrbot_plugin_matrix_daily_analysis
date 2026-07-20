@@ -52,7 +52,10 @@ class GroupAnalysisHandler:
                     await self.retry_manager.add_task(
                         html_content, analysis_result, group_id, platform_id
                     )
-                    return False, "[AstrBot matrix 群日常分析总结插件] ⚠️ 图片报告发送失败，已加入重试队列。"
+                    return (
+                        False,
+                        "[AstrBot matrix 群日常分析总结插件] ⚠️ 图片报告发送失败，已加入重试队列。",
+                    )
                 else:
                     return False, "❌ 图片发送失败，且无法进行重试（无 HTML 内容）。"
             except Exception as send_err:
@@ -64,9 +67,15 @@ class GroupAnalysisHandler:
                     await self.retry_manager.add_task(
                         html_content, analysis_result, group_id, platform_id
                     )
-                    return False, "[AstrBot matrix 群日常分析总结插件] ⚠️ 图片报告发送异常，已加入重试队列。"
+                    return (
+                        False,
+                        "[AstrBot matrix 群日常分析总结插件] ⚠️ 图片报告发送异常，已加入重试队列。",
+                    )
                 else:
-                    return False, f"❌ 图片发送失败：{send_err}，且无法进行重试（无 HTML 内容）。"
+                    return (
+                        False,
+                        f"❌ 图片发送失败：{send_err}，且无法进行重试（无 HTML 内容）。",
+                    )
 
         elif html_content:
             # 生成失败但有 HTML，加入重试队列
@@ -75,12 +84,18 @@ class GroupAnalysisHandler:
             await self.retry_manager.add_task(
                 html_content, analysis_result, group_id, platform_id
             )
-            return False, "[AstrBot matrix 群日常分析总结插件] ⚠️ 图片报告暂无法生成，已加入重试队列，稍后将自动重试发送。"
+            return (
+                False,
+                "[AstrBot matrix 群日常分析总结插件] ⚠️ 图片报告暂无法生成，已加入重试队列，稍后将自动重试发送。",
+            )
         else:
             # 如果图片生成失败且无 HTML，回退到文本报告
             logger.warning("图片报告生成失败（无 HTML），回退到文本报告")
             text_report = self.report_generator.generate_text_report(analysis_result)
-            return False, f"[AstrBot matrix 群日常分析总结插件] ⚠️ 图片报告生成失败，以下是文本版本：\n\n{text_report}"
+            return (
+                False,
+                f"[AstrBot matrix 群日常分析总结插件] ⚠️ 图片报告生成失败，以下是文本版本：\n\n{text_report}",
+            )
 
     async def handle_pdf_report(self, event, analysis_result: dict, group_id: str):
         """处理 PDF 格式报告的生成和发送"""
@@ -94,7 +109,9 @@ class GroupAnalysisHandler:
             sent = await self.auto_scheduler._send_pdf_file(group_id, pdf_path)
             if not sent:
                 logger.warning("PDF 发送失败，回退到文本报告")
-                text_report = self.report_generator.generate_text_report(analysis_result)
+                text_report = self.report_generator.generate_text_report(
+                    analysis_result
+                )
                 return False, f"\n📝 以下是文本版本的分析报告：\n\n{text_report}"
             return True, None
         else:

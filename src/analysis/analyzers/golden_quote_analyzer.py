@@ -105,10 +105,13 @@ class GoldenQuoteAnalyzer(BaseAnalyzer):
             max_quotes = self.get_max_count()
 
             for quote_data in quotes_data[:max_quotes]:
+                if not isinstance(quote_data, dict):
+                    logger.warning(f"Skipping non-object golden quote: {quote_data!r}")
+                    continue
                 # 确保数据格式正确
-                content = quote_data.get("content", "").strip()
-                sender = quote_data.get("sender", "").strip()
-                reason = quote_data.get("reason", "").strip()
+                content = str(quote_data.get("content", "") or "").strip()
+                sender = str(quote_data.get("sender", "") or "").strip()
+                reason = str(quote_data.get("reason", "") or "").strip()
 
                 # 验证必要字段
                 if not content or not sender or not reason:
@@ -137,12 +140,23 @@ class GoldenQuoteAnalyzer(BaseAnalyzer):
         """
         try:
             interesting_messages = []
+            bot_matrix_ids = (
+                {
+                    str(matrix)
+                    for matrix in self.config_manager.get_bot_matrix_ids()
+                    if matrix
+                }
+                if self.config_manager.should_skip_history_bots()
+                else set()
+            )
 
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
                 sender = msg.get("sender", {})
                 if not isinstance(sender, dict):
+                    continue
+                if str(sender.get("user_id", "")) in bot_matrix_ids:
                     continue
                 nickname = InfoUtils.get_user_nickname(self.config_manager, sender)
                 msg_time = format_timestamp_hm(msg.get("time", 0))
@@ -162,11 +176,24 @@ class GoldenQuoteAnalyzer(BaseAnalyzer):
                         if 5 <= len(text) <= 100 and not text.startswith(
                             ("http", "www", "/")
                         ):
-                            if self.config_manager.get_threading_enabled() and self.config_manager.get_thread_label_in_prompt():
-                                relation_type = str(msg.get("relation_type", "") or "").strip().lower()
-                                thread_root_id = str(msg.get("thread_root_id", "") or "").strip()
+                            if (
+                                self.config_manager.get_threading_enabled()
+                                and self.config_manager.get_thread_label_in_prompt()
+                            ):
+                                relation_type = (
+                                    str(msg.get("relation_type", "") or "")
+                                    .strip()
+                                    .lower()
+                                )
+                                thread_root_id = str(
+                                    msg.get("thread_root_id", "") or ""
+                                ).strip()
                                 if relation_type == "m.thread" and thread_root_id:
-                                    short_tid = thread_root_id[-8:] if len(thread_root_id) > 8 else thread_root_id
+                                    short_tid = (
+                                        thread_root_id[-8:]
+                                        if len(thread_root_id) > 8
+                                        else thread_root_id
+                                    )
                                     text = f"[thread:{short_tid}] {text}"
                             interesting_messages.append(
                                 {
@@ -175,9 +202,15 @@ class GoldenQuoteAnalyzer(BaseAnalyzer):
                                     "content": text,
                                     "matrix": str(sender.get("user_id", "")),
                                     "event_id": str(msg.get("event_id", "") or ""),
-                                    "relation_type": str(msg.get("relation_type", "") or ""),
-                                    "thread_root_id": str(msg.get("thread_root_id", "") or ""),
-                                    "reply_event_id": str(msg.get("reply_event_id", "") or ""),
+                                    "relation_type": str(
+                                        msg.get("relation_type", "") or ""
+                                    ),
+                                    "thread_root_id": str(
+                                        msg.get("thread_root_id", "") or ""
+                                    ),
+                                    "reply_event_id": str(
+                                        msg.get("reply_event_id", "") or ""
+                                    ),
                                 }
                             )
 

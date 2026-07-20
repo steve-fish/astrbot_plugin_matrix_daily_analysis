@@ -106,6 +106,7 @@ class MessageHandler:
     ) -> list[dict]:
         """从 Matrix 平台获取群聊消息"""
         messages = []
+        seen_event_ids = set()
         # Matrix use millisecond timestamp
         start_ts = int(start_time.timestamp() * 1000)
         end_ts = int(end_time.timestamp() * 1000)
@@ -113,6 +114,17 @@ class MessageHandler:
         try:
             limit = self.config_manager.get_max_messages()
             logger.info(f"正在从 Matrix 获取消息，limit={limit}")
+            filtered_prefixes = tuple(
+                str(prefix).strip().casefold()
+                for prefix in self.config_manager.get_history_filter_prefixes()
+                if str(prefix or "").strip()
+            )
+            filtered_users = {
+                str(user).strip().casefold()
+                for user in self.config_manager.get_history_filter_users()
+                if str(user or "").strip()
+            }
+            skip_bots = self.config_manager.should_skip_history_bots()
 
             # 获取群成员列表以填充昵称
             display_names = {}
@@ -122,11 +134,21 @@ class MessageHandler:
                 )
                 if hasattr(client, "get_room_members"):
                     members_resp = await client.get_room_members(group_id)
-                    member_events = members_resp.get("chunk", [])
+                    member_events = (
+                        members_resp.get("chunk", [])
+                        if isinstance(members_resp, dict)
+                        else []
+                    )
+                    if not isinstance(member_events, list):
+                        member_events = []
                     for event in member_events:
+                        if not isinstance(event, dict):
+                            continue
                         if event.get("type") == "m.room.member":
                             user_id = event.get("state_key")
                             content = event.get("content", {})
+                            if not isinstance(content, dict):
+                                continue
                             displayname = content.get("displayname")
                             if user_id and displayname:
                                 display_names[user_id] = displayname
@@ -140,6 +162,7 @@ class MessageHandler:
                 remaining = limit
                 page_size = min(200, max(1, remaining))
                 reached_start = False
+                seen_tokens = set()
 
                 while remaining > 0 and not reached_start:
                     response = await client.room_messages(
@@ -148,18 +171,33 @@ class MessageHandler:
                         direction="b",
                         from_token=from_token,
                     )
+                    if not isinstance(response, dict):
+                        logger.warning(
+                            "Matrix history pagination returned invalid data; stopping"
+                        )
+                        break
                     chunk = response.get("chunk", [])
+                    if not isinstance(chunk, list):
+                        logger.warning(
+                            "Matrix history pagination chunk is not a list; stopping"
+                        )
+                        break
                     if not chunk:
                         break
 
                     # Matrix 返回的是 chunk，包含 events（倒序：新->旧）
                     for event in chunk:
+                        if not isinstance(event, dict):
+                            continue
                         # 过滤非消息事件
                         if event.get("type") != "m.room.message":
                             continue
 
                         # 检查时间
-                        ts = event.get("origin_server_ts", 0)
+                        try:
+                            ts = int(event.get("origin_server_ts", 0))
+                        except (TypeError, ValueError):
+                            continue
                         if ts < start_ts:
                             reached_start = True
                             continue  # 太旧的消息
@@ -167,13 +205,29 @@ class MessageHandler:
                             continue
 
                         content = event.get("content", {})
-                        sender = event.get("sender")
+                        if not isinstance(content, dict):
+                            continue
+                        sender = str(event.get("sender", "") or "").strip()
+                        if not sender:
+                            continue
                         event_id = str(event.get("event_id", "") or "")
+                        if event_id and event_id in seen_event_ids:
+                            continue
 
-                        # 过滤机器人自己的消息
+                        # Apply global history filters before counting the limit so
+                        # every analysis path receives the requested number of valid events.
+                        if sender.casefold() in filtered_users:
+                            continue
                         if (
-                            self.bot_manager
+                            skip_bots
+                            and self.bot_manager
                             and self.bot_manager.should_filter_bot_message(sender)
+                        ):
+                            continue
+                        body = str(content.get("body", "") or "")
+                        normalized_body = body.lstrip().casefold()
+                        if filtered_prefixes and normalized_body.startswith(
+                            filtered_prefixes
                         ):
                             continue
 
@@ -188,7 +242,9 @@ class MessageHandler:
                         ):
                             relates_to = content.get("m.relates_to", {})
                             if isinstance(relates_to, dict):
-                                relation_type = str(relates_to.get("rel_type", "") or "")
+                                relation_type = str(
+                                    relates_to.get("rel_type", "") or ""
+                                )
                                 thread_entry = relates_to.get("m.thread")
                                 if isinstance(thread_entry, dict):
                                     thread_root_id = str(
@@ -256,15 +312,26 @@ class MessageHandler:
                             )
 
                         messages.append(msg_dict)
+                        if event_id:
+                            seen_event_ids.add(event_id)
                         remaining -= 1
                         if remaining <= 0:
                             break
 
-                    from_token = response.get("end")
-                    if not from_token:
+                    next_token = str(response.get("end", "") or "").strip()
+                    if (
+                        not next_token
+                        or next_token == from_token
+                        or next_token in seen_tokens
+                    ):
                         break
+                    seen_tokens.add(next_token)
+                    from_token = next_token
                     page_size = min(200, max(1, remaining))
 
+                # Matrix backward pagination returns newest events first. LLM prompts
+                # need natural conversation order so replies follow their context.
+                messages.sort(key=lambda message: message.get("time", 0))
                 logger.info(f"Matrix 获取到 {len(messages)} 条有效消息")
                 return messages
             else:
@@ -288,7 +355,9 @@ class MessageHandler:
             sender = msg.get("sender", {})
             if not isinstance(sender, dict):
                 continue
-            sender_id = str(sender.get("user_id", ""))
+            sender_id = str(sender.get("user_id", "") or "").strip()
+            if not sender_id:
+                continue
             participants.add(sender_id)
 
             # 统计时间分布
@@ -306,7 +375,7 @@ class MessageHandler:
                 if not isinstance(data, dict):
                     data = {}
                 if content.get("type") == "text":
-                    text = data.get("text", "")
+                    text = str(data.get("text", "") or "")
                     total_chars += len(text)
                 elif content.get("type") == "face":
                     # matrix 基础表情
@@ -338,7 +407,7 @@ class MessageHandler:
                     )
                 elif content.get("type") == "image":
                     # 检查是否是动画表情（通过 summary 字段判断）
-                    summary = data.get("summary", "")
+                    summary = str(data.get("summary", "") or "")
                     if "动画表情" in summary or "表情" in summary:
                         # 动画表情（以 image 形式发送）
                         emoji_statistics.mface_count += 1

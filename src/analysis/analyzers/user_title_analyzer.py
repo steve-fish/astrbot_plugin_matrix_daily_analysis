@@ -107,12 +107,15 @@ class UserTitleAnalyzer(BaseAnalyzer):
             max_titles = self.get_max_count()
 
             for title_data in titles_data[:max_titles]:
+                if not isinstance(title_data, dict):
+                    logger.warning(f"Skipping non-object user title: {title_data!r}")
+                    continue
                 # 确保数据格式正确
-                name = title_data.get("name", "").strip()
+                name = str(title_data.get("name", "") or "").strip()
                 matrix = title_data.get("matrix")
-                title = title_data.get("title", "").strip()
-                mbti = title_data.get("mbti", "").strip()
-                reason = title_data.get("reason", "").strip()
+                title = str(title_data.get("title", "") or "").strip()
+                mbti = str(title_data.get("mbti", "") or "").strip()
+                reason = str(title_data.get("reason", "") or "").strip()
 
                 # 验证必要字段
                 if not name or not title or not mbti or not reason:
@@ -157,7 +160,15 @@ class UserTitleAnalyzer(BaseAnalyzer):
         """
         try:
             # 获取机器人 matrix 号列表用于过滤
-            bot_matrix_ids = self.config_manager.get_bot_matrix_ids()
+            bot_matrix_ids = (
+                {
+                    str(matrix)
+                    for matrix in self.config_manager.get_bot_matrix_ids()
+                    if matrix
+                }
+                if self.config_manager.should_skip_history_bots()
+                else set()
+            )
 
             user_summaries = []
 
@@ -178,7 +189,7 @@ class UserTitleAnalyzer(BaseAnalyzer):
 
             for user_id, stats in user_analysis.items():
                 # 过滤机器人自己的消息
-                if bot_matrix_ids and str(user_id) in [str(matrix) for matrix in bot_matrix_ids]:
+                if bot_matrix_ids and str(user_id) in bot_matrix_ids:
                     logger.debug(f"过滤掉机器人 matrix 号：{user_id}")
                     continue
 

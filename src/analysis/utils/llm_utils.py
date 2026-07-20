@@ -198,20 +198,24 @@ async def call_provider_with_retry(
     retries = config_manager.get_llm_retries()
     backoff = config_manager.get_llm_backoff()
 
+    if not prompt or not prompt.strip():
+        logger.error("LLM provider prompt is empty; llm_generate was not called")
+        return None
+
+    provider_id = await get_provider_id_with_fallback(
+        context, config_manager, provider_id_key, umo
+    )
+    if not provider_id:
+        logger.error("Provider ID is empty; llm_generate was not called")
+        return None
+
     last_exc = None
-    for attempt in range(1, retries + 1):
+    total_attempts = retries + 1
+    for attempt in range(1, total_attempts + 1):
         try:
-            # 使用新的 provider 选择逻辑，获取 Provider ID
-            provider_id = await get_provider_id_with_fallback(
-                context, config_manager, provider_id_key, umo
-            )
-
-            if not provider_id:
-                logger.error("provider_id 为空，无法调用 llm_generate，直接返回 None")
-                return None
-
             logger.info(
-                f"[LLM 调用] 使用 Provider ID: {provider_id} | "
+                f"[LLM request] Attempt {attempt}/{total_attempts} | "
+                f"Provider ID: {provider_id} | "
                 f"max_tokens={max_tokens} | temperature={temperature} | "
                 f"prompt 长度={len(prompt) if prompt else 0}字符"
             )
@@ -219,13 +223,6 @@ async def call_provider_with_retry(
             logger.debug(
                 f"[LLM 调用] Prompt 前 100 字符：{prompt[:100] if prompt else 'None'}..."
             )
-
-            # 检查 prompt 是否为空
-            if not prompt or not prompt.strip():
-                logger.error(
-                    "LLM provider: prompt 为空或只包含空白字符，无法调用 llm_generate"
-                )
-                return None
 
             # 使用新的 llm_generate API
             # 注意：llm_generate 可能不直接支持 max_tokens 和 temperature 参数，
@@ -251,15 +248,15 @@ async def call_provider_with_retry(
             last_exc = e
             logger.warning(f"LLM 请求失败：第{attempt}次，错误：{last_exc}")
         # 若非最后一次，等待退避后重试
-        if attempt < retries:
+        if attempt < total_attempts:
             await asyncio.sleep(backoff * attempt)
 
     # 最终仍失败，记录错误并返回 None 由调用方处理降级，避免抛出异常
-    logger.error(f"LLM 请求全部重试失败：{last_exc}")
+    logger.error(f"All {total_attempts} LLM attempts failed: {last_exc}")
     return None
 
 
-def extract_token_usage(response) -> dict | None:
+def extract_token_usage(response) -> dict[str, int]:
     """
     从 LLM 响应中提取 token 使用统计
 
@@ -272,26 +269,72 @@ def extract_token_usage(response) -> dict | None:
     try:
         token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-        # 尝试从 LLMResponse 中提取 usage
-        # 假设 LLMResponse 有 usage 属性或 raw_completion 属性
-        if hasattr(response, "usage") and response.usage:
-            usage = response.usage
-            token_usage["prompt_tokens"] = getattr(usage, "prompt_tokens", 0) or 0
-            token_usage["completion_tokens"] = (
-                getattr(usage, "completion_tokens", 0) or 0
-            )
-            token_usage["total_tokens"] = getattr(usage, "total_tokens", 0) or 0
+        def normalized_count(value) -> int:
+            """Convert a provider counter to a non-negative integer.
+
+            Args:
+                value: Provider-specific token count.
+
+            Returns:
+                A normalized non-negative count.
+            """
+            try:
+                return max(0, int(value or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        # AstrBot 4.26+ uses input/output/total, while older provider responses
+        # expose prompt_tokens/completion_tokens/total_tokens.
+        usage = getattr(response, "usage", None)
+        if usage:
+            if isinstance(usage, dict):
+                prompt_tokens = usage.get(
+                    "prompt_tokens", usage.get("input", usage.get("input_tokens", 0))
+                )
+                completion_tokens = usage.get(
+                    "completion_tokens",
+                    usage.get("output", usage.get("output_tokens", 0)),
+                )
+                total_tokens = usage.get("total_tokens", usage.get("total", 0))
+            else:
+                prompt_tokens = getattr(usage, "prompt_tokens", None)
+                if prompt_tokens is None:
+                    prompt_tokens = getattr(usage, "input", 0)
+                completion_tokens = getattr(usage, "completion_tokens", None)
+                if completion_tokens is None:
+                    completion_tokens = getattr(usage, "output", 0)
+                total_tokens = getattr(usage, "total_tokens", None)
+                if total_tokens is None:
+                    total_tokens = getattr(usage, "total", 0)
+
+            token_usage["prompt_tokens"] = normalized_count(prompt_tokens)
+            token_usage["completion_tokens"] = normalized_count(completion_tokens)
+            token_usage["total_tokens"] = normalized_count(total_tokens)
+            if not token_usage["total_tokens"]:
+                token_usage["total_tokens"] = (
+                    token_usage["prompt_tokens"] + token_usage["completion_tokens"]
+                )
             return token_usage
 
         # 兼容旧的提取方式 (如果 response 是旧的 ProviderResponse)
         if getattr(response, "raw_completion", None) is not None:
             usage = getattr(response.raw_completion, "usage", None)
             if usage:
-                token_usage["prompt_tokens"] = getattr(usage, "prompt_tokens", 0) or 0
-                token_usage["completion_tokens"] = (
-                    getattr(usage, "completion_tokens", 0) or 0
-                )
-                token_usage["total_tokens"] = getattr(usage, "total_tokens", 0) or 0
+                if isinstance(usage, dict):
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
+                    total_tokens = usage.get("total_tokens", 0)
+                else:
+                    prompt_tokens = getattr(usage, "prompt_tokens", 0)
+                    completion_tokens = getattr(usage, "completion_tokens", 0)
+                    total_tokens = getattr(usage, "total_tokens", 0)
+                token_usage["prompt_tokens"] = normalized_count(prompt_tokens)
+                token_usage["completion_tokens"] = normalized_count(completion_tokens)
+                token_usage["total_tokens"] = normalized_count(total_tokens)
+                if not token_usage["total_tokens"]:
+                    token_usage["total_tokens"] = (
+                        token_usage["prompt_tokens"] + token_usage["completion_tokens"]
+                    )
 
         return token_usage
 
@@ -312,9 +355,8 @@ def extract_response_text(response) -> str:
     """
     try:
         if hasattr(response, "completion_text"):
-            return response.completion_text
-        else:
-            return str(response)
+            return str(response.completion_text or "")
+        return str(response or "")
     except Exception as e:
         logger.error(f"提取响应文本失败：{e}")
         return ""

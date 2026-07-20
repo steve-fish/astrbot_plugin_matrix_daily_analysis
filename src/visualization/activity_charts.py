@@ -57,7 +57,7 @@ class ActivityVisualizer:
                 if content.get("type") in ["face", "mface", "bface", "sface"]:
                     emoji_activity[hour] += 1
                 elif content.get("type") == "image":
-                    summary = data.get("summary", "")
+                    summary = str(data.get("summary", "") or "")
                     if "动画表情" in summary or "表情" in summary:
                         emoji_activity[hour] += 1
 

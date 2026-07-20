@@ -3,6 +3,7 @@ import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from astrbot.api import logger
 
@@ -76,7 +77,11 @@ class RetryManager:
                 plugin_enabled = self.bot_manager.is_plugin_enabled(
                     normalized, "astrbot_plugin_matrix_daily_analysis"
                 )
-            if bot and self.bot_manager.is_matrix_platform_id(normalized) and plugin_enabled:
+            if (
+                bot
+                and self.bot_manager.is_matrix_platform_id(normalized)
+                and plugin_enabled
+            ):
                 return normalized, bot
 
         bot_instances = getattr(self.bot_manager, "_bot_instances", {})
@@ -190,7 +195,6 @@ class RetryManager:
                         self._dlq.append(task)
                         # 尝试发送文本回退
                         await self._send_fallback_text(task)
-                        await self._notify_failure(task)
 
             except asyncio.CancelledError:
                 break
@@ -232,19 +236,53 @@ class RetryManager:
             }
             logger.debug(f"[RetryManager] 正在重新渲染群 {task.group_id} 的图片...")
 
-            # 修改：return_url=False 获取二进制数据而不是 URL
-            # 这对于解决 NTmatrix "Timeout" 错误至关重要，因为它避免了 matrix 客户端下载本地/内网 URL 的网络问题
-            image_data = await self.html_render_func(
+            # A local file avoids requiring the Matrix client to reach a private URL.
+            rendered_image = await self.html_render_func(
                 task.html_content,
                 {},
-                False,  # return_url=False, 获取 bytes
+                False,
                 image_options,
             )
 
-            if not image_data:
+            if not rendered_image:
                 logger.warning(
                     f"[RetryManager] 重新渲染失败（返回空数据）{task.group_id}"
                 )
+                return False
+
+            if isinstance(rendered_image, (bytes, bytearray)):
+                image_data = bytes(rendered_image)
+            else:
+                image_path = Path(str(rendered_image))
+                try:
+                    if not await asyncio.to_thread(image_path.is_file):
+                        logger.warning(
+                            f"[RetryManager] Render retry returned an invalid file: "
+                            f"{rendered_image}"
+                        )
+                        return False
+                    if (
+                        await asyncio.to_thread(image_path.stat)
+                    ).st_size > 10 * 1024 * 1024:
+                        logger.warning(
+                            "[RetryManager] Rendered image exceeds the 10MB limit"
+                        )
+                        return False
+                    image_data = await asyncio.to_thread(image_path.read_bytes)
+                except (OSError, ValueError) as e:
+                    logger.warning(f"[RetryManager] Failed to read rendered image: {e}")
+                    return False
+
+            if image_data.startswith(b"\x89PNG\r\n\x1a\n"):
+                content_type = "image/png"
+                filename = "report.png"
+                display_name = "Daily Report.png"
+            elif image_data.startswith(b"\xff\xd8\xff"):
+                content_type = "image/jpeg"
+                filename = "report.jpg"
+                display_name = "Daily Report.jpg"
+            else:
+                logger.warning("[RetryManager] Rendered output is not PNG or JPEG")
                 return False
 
             # 2. 获取 Bot 实例（优先使用任务记录的平台，不可用时回退到可用 Matrix 平台）
@@ -277,9 +315,13 @@ class RetryManager:
 
             try:
                 upload_resp = await client.upload_file(
-                    image_data, "image/jpeg", "report.jpg"
+                    image_data, content_type, filename
                 )
-                content_uri = upload_resp.get("content_uri")
+                content_uri = (
+                    upload_resp.get("content_uri")
+                    if isinstance(upload_resp, dict)
+                    else None
+                )
                 if not content_uri:
                     logger.warning("[RetryManager] 图片上传失败：未返回 content_uri")
                     return False
@@ -297,7 +339,7 @@ class RetryManager:
                     "m.room.message",
                     {
                         "msgtype": "m.image",
-                        "body": "Daily Report.jpg",
+                        "body": display_name,
                         "url": content_uri,
                     },
                 )

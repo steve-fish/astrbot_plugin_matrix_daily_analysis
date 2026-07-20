@@ -144,9 +144,9 @@ class ConfigManager:
     def get_max_concurrent_tasks(self) -> int:
         """获取自动分析最大并发数"""
         value = self._get_nested(
-            ("analysis", "max_concurrent_tasks"), 5, "max_concurrent_tasks"
+            ("analysis", "max_concurrent_tasks"), 3, "max_concurrent_tasks"
         )
-        return self._normalize_int(value, 5, minimum=1)
+        return self._normalize_int(value, 3, minimum=1)
 
     def get_max_messages(self) -> int:
         """获取最大消息数量"""
@@ -295,8 +295,8 @@ class ConfigManager:
 
     def get_llm_timeout(self) -> int:
         """获取 LLM 请求超时时间（秒）"""
-        value = self._get_nested(("llm", "timeout"), 30, "llm_timeout")
-        return self._normalize_int(value, 30, minimum=1)
+        value = self._get_nested(("llm", "timeout"), 100, "llm_timeout")
+        return self._normalize_int(value, 100, minimum=1)
 
     def get_llm_retries(self) -> int:
         """获取 LLM 请求重试次数"""
@@ -318,14 +318,18 @@ class ConfigManager:
     def get_golden_quote_max_tokens(self) -> int:
         """获取金句分析最大 token 数"""
         value = self._get_nested(
-            ("analysis", "golden_quote", "max_tokens"), 4096, "golden_quote_max_tokens"
+            ("analysis", "golden_quote", "max_tokens"),
+            4096,
+            "golden_quote_max_tokens",
         )
         return self._normalize_int(value, 4096, minimum=1)
 
     def get_user_title_max_tokens(self) -> int:
         """获取用户称号分析最大 token 数"""
         value = self._get_nested(
-            ("analysis", "user_title", "max_tokens"), 4096, "user_title_max_tokens"
+            ("analysis", "user_title", "max_tokens"),
+            4096,
+            "user_title_max_tokens",
         )
         return self._normalize_int(value, 4096, minimum=1)
 
@@ -349,12 +353,12 @@ class ConfigManager:
         raw_emoji = str(
             self._get_nested(
                 ("interaction", "progress_reaction_emoji"),
-                "🗳️",
+                "🫪",
                 "progress_reaction_emoji",
             )
             or ""
         ).strip()
-        return raw_emoji or "🗳️"
+        return raw_emoji or "🫪"
 
     def get_topic_provider_id(self) -> str:
         """获取话题分析专用 Provider ID"""
@@ -464,19 +468,33 @@ class ConfigManager:
         """获取报告输出目录（固定为插件数据目录）"""
         return get_default_reports_dir()
 
-    def get_bot_matrix_ids(self) -> list:
+    def get_bot_matrix_ids(self) -> list[str]:
         """获取 bot matrix 号列表"""
-        return self._get_nested(
+        raw_value = self._get_nested(
             ("auto_analysis", "bot_matrix_ids"), [], "bot_matrix_ids"
         )
+        if isinstance(raw_value, str):
+            raw_value = [raw_value]
+        if not isinstance(raw_value, (list, tuple, set)):
+            return []
+        normalized = []
+        seen = set()
+        for item in raw_value:
+            matrix_id = str(item or "").strip()
+            if not matrix_id or matrix_id in seen:
+                continue
+            seen.add(matrix_id)
+            normalized.append(matrix_id)
+        return normalized
 
     def get_pdf_filename_format(self) -> str:
         """获取 PDF 文件名格式"""
-        return self._get_nested(
+        value = self._get_nested(
             ("output", "pdf", "filename_format"),
             "群聊分析报告_{group_id}_{date}.pdf",
             "pdf_filename_format",
         )
+        return str(value or "群聊分析报告_{group_id}_{date}.pdf")
 
     def get_topic_analysis_prompt(self, style: str = "topic_prompt") -> str:
         """

@@ -8,6 +8,8 @@ import re
 
 from astrbot.api import logger
 
+from ..utils.time_utils import parse_timestamp
+
 DEFAULT_DIALOGUE_POLL_PROMPT = (
     "你是群聊文风模仿器。根据下面的聊天记录，生成一个单选投票：给出一个简短的问题 (question)，"
     "以及 {option_count} 条候选发言 (options)。候选发言必须是'嘎啦给目'风格，语气俏皮、有点碎碎念，但不要冒犯。"
@@ -52,12 +54,12 @@ class DialoguePollHandler:
     ) -> str:
         """将消息整理为对话提示词文本。"""
         prefixes = [
-            prefix.lower().strip()
+            prefix.casefold().strip()
             for prefix in self.config_manager.get_history_filter_prefixes()
             if isinstance(prefix, str) and prefix.strip()
         ]
         user_filters = {
-            user.lower().strip()
+            user.casefold().strip()
             for user in self.config_manager.get_history_filter_users()
             if isinstance(user, str) and user.strip()
         }
@@ -70,7 +72,8 @@ class DialoguePollHandler:
             if not isinstance(sender_data, dict):
                 sender_data = {}
             sender = sender_data.get("nickname") or sender_data.get("user_id") or "匿名"
-            msg_time = msg.get("time", 0) or 0
+            parsed_time = parse_timestamp(msg.get("time", 0))
+            msg_time = parsed_time.timestamp() if parsed_time else 0.0
             sender_id = str(sender_data.get("user_id") or "").strip()
             message_items = msg.get("message", [])
             if not isinstance(message_items, list):
@@ -114,9 +117,9 @@ class DialoguePollHandler:
         if skip_bot and sender_id and self.bot_manager:
             if self.bot_manager.should_filter_bot_message(sender_id):
                 return True
-        if sender_id and sender_id.lower() in user_filters:
+        if sender_id and sender_id.casefold() in user_filters:
             return True
-        lower_text = text.lower().lstrip()
+        lower_text = text.casefold().lstrip()
         for prefix in prefixes:
             if prefix and lower_text.startswith(prefix):
                 return True
@@ -140,27 +143,24 @@ class DialoguePollHandler:
 
     def parse_dialogue_poll_json(self, text: str) -> tuple[str, list[str]] | None:
         """解析 LLM 输出的投票 JSON。"""
-        from ..analysis.utils.json_utils import fix_json
+        from ..analysis.utils.json_utils import extract_json_array, fix_json
 
         if not text:
             return None
-        match = re.search(r"\[.*\]", text, re.DOTALL)
-        if not match:
+        json_text = extract_json_array(text)
+        if not json_text:
             logger.warning("对话投票 JSON 匹配失败，未找到数组结构")
             return None
-        json_text = fix_json(match.group())
+        json_text = fix_json(json_text)
         logger.debug(f"对话投票 JSON 修复后：{json_text}")
         try:
             data = json.loads(json_text)
         except Exception as e:
-            try:
-                json_text_alt = json_text.replace('\\"', '"')
-                data = json.loads(json_text_alt)
-            except Exception:
-                logger.warning(
-                    f"对话投票 JSON 解析失败：{e} | raw={text} | cleaned={json_text}"
-                )
-                data = None
+            logger.warning(
+                f"Dialogue poll JSON parsing failed: {e} | "
+                f"raw={text} | cleaned={json_text}"
+            )
+            data = None
         if data is None:
             return None
         if not isinstance(data, list) or not data:

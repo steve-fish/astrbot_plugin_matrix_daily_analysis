@@ -3,6 +3,7 @@ JSON 处理工具模块
 提供 JSON 解析、修复和正则提取功能
 """
 
+import ast
 import json
 import re
 
@@ -19,66 +20,110 @@ def fix_json(text: str) -> str:
     Returns:
         修复后的 JSON 文本
     """
+    original = str(text or "")
     try:
-        # 1. 移除 markdown 代码块标记
-        text = re.sub(r"```json\s*", "", text)
-        text = re.sub(r"```\s*$", "", text)
+        cleaned = re.sub(
+            r"^\s*```(?:json)?\s*",
+            "",
+            original,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s*```\s*$", "", cleaned, count=1).strip()
 
-        # 2. 基础清理
-        text = text.replace("\n", " ").replace("\r", " ")
-        text = re.sub(r"\s+", " ", text)
+        # Never rewrite already valid JSON. In particular, punctuation and escaped
+        # quotes inside user-generated chat content must remain untouched.
+        try:
+            json.loads(cleaned)
+            return cleaned
+        except (TypeError, json.JSONDecodeError):
+            pass
 
-        # 3. 替换中文符号为英文符号（修复）
-        # 中文引号 -> 英文引号
-        text = text.replace("“", '"').replace("”", '"')
-        text = text.replace("‘", "'").replace("’", "'")
-        # 中文逗号 -> 英文逗号
-        text = text.replace("，", ",")
-        # 中文冒号 -> 英文冒号
-        text = text.replace("：", ":")
-        # 中文括号 -> 英文括号
-        text = text.replace("（", "(").replace("）", ")")
-        text = text.replace("【", "[").replace("】", "]")
+        # Python-style lists/dicts are a common LLM deviation and can be converted
+        # safely without executing code.
+        try:
+            literal = ast.literal_eval(cleaned)
+            return json.dumps(literal, ensure_ascii=False)
+        except (SyntaxError, ValueError):
+            pass
 
-        # 4. 处理字符串内容中的特殊字符
-        # 转义字符串内的双引号
-        def escape_quotes_in_strings(match):
-            content = match.group(1)
-            # 转义内部的双引号
-            content = content.replace('"', '\\"')
-            return f'"{content}"'
+        repaired = cleaned.replace("\n", " ").replace("\r", " ")
+        repaired = repaired.replace("“", '"').replace("”", '"')
+        repaired = repaired.replace("‘", "'").replace("’", "'")
+        repaired = repaired.replace("，", ",").replace("：", ":")
+        repaired = repaired.replace("【", "[").replace("】", "]")
+        repaired = repaired.replace("｛", "{").replace("｝", "}")
+        repaired = re.sub(r"}\s*{", "}, {", repaired)
+        repaired = re.sub(
+            r"([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:",
+            r'\1"\2":',
+            repaired,
+        )
+        repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
 
-        # 先处理字段值中的引号
-        text = re.sub(r'"([^"]*(?:"[^"]*)*)"', escape_quotes_in_strings, text)
-
-        # 5. 修复截断的 JSON
-        if not text.endswith("]"):
-            last_complete = text.rfind("}")
+        if repaired.startswith("[") and not repaired.rstrip().endswith("]"):
+            last_complete = repaired.rfind("}")
             if last_complete > 0:
-                text = text[: last_complete + 1] + "]"
+                repaired = repaired[: last_complete + 1] + "]"
 
-        # 6. 修复常见的 JSON 格式问题
-        # 1. 修复缺失的逗号
-        text = re.sub(r"}\s*{", "}, {", text)
-
-        # 2. 确保字段名有引号（仅在对象开始或逗号后，避免破坏字符串值）
-        def quote_field_names(match):
-            prefix = match.group(1)
-            key = match.group(2)
-            return f'{prefix}"{key}":'
-
-        # 只在 { 或 , 后面匹配字段名，避免在字符串值中误匹配
-        text = re.sub(r"([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:", quote_field_names, text)
-
-        # 3. 移除多余的逗号
-        text = re.sub(r",\s*}", "}", text)
-        text = re.sub(r",\s*]", "]", text)
-
-        return text.strip()
-
+        try:
+            json.loads(repaired)
+            return repaired.strip()
+        except json.JSONDecodeError:
+            try:
+                literal = ast.literal_eval(repaired)
+                return json.dumps(literal, ensure_ascii=False)
+            except (SyntaxError, ValueError):
+                return repaired.strip()
     except Exception as e:
-        logger.error(f"JSON 修复失败：{e}")
-        return text
+        logger.error(f"Failed to repair JSON: {e}")
+        return original
+
+
+def extract_json_array(text: str) -> str | None:
+    """Extract the first balanced JSON array from mixed LLM output.
+
+    Args:
+        text: Raw model output that may include prose or Markdown fences.
+
+    Returns:
+        The first balanced array string, or ``None`` when none is present.
+    """
+    raw = str(text or "")
+    fallback = None
+    for start, char in enumerate(raw):
+        if char != "[":
+            continue
+        depth = 0
+        in_string = False
+        closing_quote = '"'
+        escaped = False
+        for index in range(start, len(raw)):
+            current = raw[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == closing_quote:
+                    in_string = False
+                continue
+            if current in {'"', "“"}:
+                in_string = True
+                closing_quote = '"' if current == '"' else "”"
+            elif current == "[":
+                depth += 1
+            elif current == "]":
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[start : index + 1]
+                    if "{" in candidate:
+                        return candidate
+                    fallback = fallback or candidate
+                    break
+                if depth < 0:
+                    break
+    return fallback
 
 
 def parse_json_response(
@@ -95,29 +140,45 @@ def parse_json_response(
         (成功标志，解析后的数据列表，错误消息)
     """
     try:
-        # 1. 提取 JSON 部分
-        json_match = re.search(r"\[.*?\]", result_text, re.DOTALL)
-        if not json_match:
-            error_msg = f"{data_type}响应中未找到 JSON 格式"
+        json_text = extract_json_array(result_text)
+        if not json_text:
+            error_msg = f"No JSON array found in {data_type} response"
             logger.warning(error_msg)
             return False, None, error_msg
 
-        json_text = json_match.group()
         logger.debug(f"{data_type}分析 JSON 原文：{json_text[:500]}...")
+        try:
+            data = json.loads(json_text)
+        except json.JSONDecodeError:
+            json_text = fix_json(json_text)
+            logger.debug(f"Repaired {data_type} JSON: {json_text[:300]}...")
+            data = json.loads(json_text)
 
-        # 2. 修复 JSON
-        json_text = fix_json(json_text)
-        logger.debug(f"{data_type}修复后的 JSON: {json_text[:300]}...")
+        if not isinstance(data, list):
+            error_msg = f"{data_type} JSON top-level value is not an array"
+            logger.warning(error_msg)
+            return False, None, error_msg
 
-        # 3. 解析 JSON
-        data = json.loads(json_text)
-        logger.info(f"{data_type}分析成功，解析到 {len(data)} 条数据")
-        return True, data, None
+        parsed_data = [item for item in data if isinstance(item, dict)]
+        if not parsed_data:
+            error_msg = f"{data_type} JSON array contains no valid objects"
+            logger.warning(error_msg)
+            return False, None, error_msg
+        if len(parsed_data) != len(data):
+            logger.warning(
+                f"Skipped {len(data) - len(parsed_data)} non-object items in "
+                f"{data_type} JSON output"
+            )
+
+        logger.info(f"Parsed {len(parsed_data)} valid {data_type} records")
+        return True, parsed_data, None
 
     except json.JSONDecodeError as e:
         error_msg = f"{data_type}JSON 解析失败：{e}"
         logger.warning(error_msg)
-        logger.debug(f"修复后的 JSON: {json_text if 'json_text' in locals() else 'N/A'}")
+        logger.debug(
+            f"Repaired JSON: {json_text if 'json_text' in locals() else 'N/A'}"
+        )
         return False, None, error_msg
     except Exception as e:
         error_msg = f"{data_type}解析异常：{e}"

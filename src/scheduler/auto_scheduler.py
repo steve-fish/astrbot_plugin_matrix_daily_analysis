@@ -460,7 +460,12 @@ class AutoScheduler:
                     return False
 
                 # 生成并发送报告
-                await self._send_analysis_report(group_id, analysis_result, platform_id)
+                report_sent = await self._send_analysis_report(
+                    group_id, analysis_result, platform_id
+                )
+                if not report_sent:
+                    logger.error(f"Report delivery failed for room {group_id}")
+                    return False
 
                 # 记录执行时间
                 end_time = running_loop.time()
@@ -520,7 +525,17 @@ class AutoScheduler:
 
     async def _send_analysis_report(
         self, group_id: str, analysis_result: dict, platform_id: str | None = None
-    ):
+    ) -> bool:
+        """Generate and deliver an analysis report.
+
+        Args:
+            group_id: Target Matrix room ID.
+            analysis_result: Structured group analysis result.
+            platform_id: Preferred Matrix platform ID.
+
+        Returns:
+            Whether the report was sent or accepted by the retry queue.
+        """
         logger.debug(
             f"[DEBUG][SEND_REPORT] enter "
             f"group_id={group_id}, "
@@ -528,10 +543,19 @@ class AutoScheduler:
             f"analysis_result_keys={list(analysis_result.keys()) if isinstance(analysis_result, dict) else type(analysis_result)}"
         )
 
-        """发送分析报告到群"""
         try:
+            delivery_succeeded = False
+
             # Define avatar getter function
             async def avatar_getter(user_id):
+                """Fetch a Matrix avatar as an embeddable data URI.
+
+                Args:
+                    user_id: Matrix user ID.
+
+                Returns:
+                    Avatar data URI, or ``None`` when it cannot be fetched.
+                """
                 if not platform_id:
                     return None
 
@@ -590,6 +614,7 @@ class AutoScheduler:
                             )
                             if success:
                                 logger.info(f"群 {group_id} 图片报告发送成功")
+                                delivery_succeeded = True
                             else:
                                 # 图片发送失败，回退到文本
                                 logger.warning(
@@ -600,7 +625,7 @@ class AutoScheduler:
                                         analysis_result
                                     )
                                 )
-                                await self._send_text_message(
+                                delivery_succeeded = await self._send_text_message(
                                     group_id, f"📊 每日群聊分析报告：\n\n{text_report}"
                                 )
                         elif html_content:
@@ -623,6 +648,7 @@ class AutoScheduler:
                                 await self.retry_manager.add_task(
                                     html_content, analysis_result, group_id, platform_id
                                 )
+                                delivery_succeeded = True
                             else:
                                 logger.error(
                                     f"群 {group_id} 无法获取平台 ID，无法加入重试队列"
@@ -633,7 +659,7 @@ class AutoScheduler:
                                         analysis_result
                                     )
                                 )
-                                await self._send_text_message(
+                                delivery_succeeded = await self._send_text_message(
                                     group_id, f"📊 每日群聊分析报告：\n\n{text_report}"
                                 )
 
@@ -645,7 +671,7 @@ class AutoScheduler:
                             text_report = self.report_generator.generate_text_report(
                                 analysis_result
                             )
-                            await self._send_text_message(
+                            delivery_succeeded = await self._send_text_message(
                                 group_id, f"📊 每日群聊分析报告：\n\n{text_report}"
                             )
                     except Exception as img_e:
@@ -655,7 +681,7 @@ class AutoScheduler:
                         text_report = self.report_generator.generate_text_report(
                             analysis_result
                         )
-                        await self._send_text_message(
+                        delivery_succeeded = await self._send_text_message(
                             group_id, f"📊 每日群聊分析报告：\n\n{text_report}"
                         )
                 else:
@@ -666,7 +692,7 @@ class AutoScheduler:
                     text_report = self.report_generator.generate_text_report(
                         analysis_result
                     )
-                    await self._send_text_message(
+                    delivery_succeeded = await self._send_text_message(
                         group_id, f"📊 每日群聊分析报告：\n\n{text_report}"
                     )
 
@@ -676,7 +702,7 @@ class AutoScheduler:
                     text_report = self.report_generator.generate_text_report(
                         analysis_result
                     )
-                    await self._send_text_message(
+                    delivery_succeeded = await self._send_text_message(
                         group_id, f"📊 每日群聊分析报告：\n\n{text_report}"
                     )
                 else:
@@ -685,8 +711,25 @@ class AutoScheduler:
                             analysis_result, group_id, avatar_getter
                         )
                         if pdf_path:
-                            await self._send_pdf_file(group_id, pdf_path)
-                            logger.info(f"群 {group_id} 自动分析完成，已发送 PDF 报告")
+                            delivery_succeeded = await self._send_pdf_file(
+                                group_id, pdf_path
+                            )
+                            if delivery_succeeded:
+                                logger.info(f"PDF report delivered for room {group_id}")
+                            else:
+                                logger.warning(
+                                    f"PDF delivery failed for room {group_id}; "
+                                    "falling back to text"
+                                )
+                                text_report = (
+                                    self.report_generator.generate_text_report(
+                                        analysis_result
+                                    )
+                                )
+                                delivery_succeeded = await self._send_text_message(
+                                    group_id,
+                                    f"📊 每日群聊分析报告：\n\n{text_report}",
+                                )
                         else:
                             logger.error(
                                 f"群 {group_id} PDF 报告生成失败（返回 None），回退到文本报告"
@@ -694,7 +737,7 @@ class AutoScheduler:
                             text_report = self.report_generator.generate_text_report(
                                 analysis_result
                             )
-                            await self._send_text_message(
+                            delivery_succeeded = await self._send_text_message(
                                 group_id, f"📊 每日群聊分析报告：\n\n{text_report}"
                             )
                     except Exception as pdf_e:
@@ -704,24 +747,37 @@ class AutoScheduler:
                         text_report = self.report_generator.generate_text_report(
                             analysis_result
                         )
-                        await self._send_text_message(
+                        delivery_succeeded = await self._send_text_message(
                             group_id, f"📊 每日群聊分析报告：\n\n{text_report}"
                         )
             else:
                 text_report = self.report_generator.generate_text_report(
                     analysis_result
                 )
-                await self._send_text_message(
+                delivery_succeeded = await self._send_text_message(
                     group_id, f"📊 每日群聊分析报告：\n\n{text_report}"
                 )
 
-            logger.info(f"群 {group_id} 自动分析完成，已发送报告")
+            if delivery_succeeded:
+                logger.info(f"Analysis report delivered for room {group_id}")
+            else:
+                logger.error(f"Analysis report was not delivered for room {group_id}")
+            return delivery_succeeded
 
         except Exception as e:
             logger.error(f"发送分析报告到群 {group_id} 失败：{e}")
+            return False
 
-    async def _send_image_message(self, group_id: str, image_url: str):
-        """发送图片消息到群（仅支持 Matrix，通过 upload 方式）"""
+    async def _send_image_message(self, group_id: str, image_source: str) -> bool:
+        """Send a local or remote image to a Matrix room.
+
+        Args:
+            group_id: Target Matrix room ID.
+            image_source: Local file path or HTTP(S) URL.
+
+        Returns:
+            Whether a Matrix client uploaded and sent the image.
+        """
         try:
             prefix_text = "📊 每日群聊分析报告已生成："
             clients = await self._resolve_matrix_clients(
@@ -731,28 +787,73 @@ class AutoScheduler:
             if not clients:
                 return False
 
-            # 仅支持 Matrix，必须下载后上传
+            max_bytes = 10 * 1024 * 1024
+            image_bytes = None
+            image_source = str(image_source or "").strip()
             try:
-                # 设置请求超时和响应大小限制
-                timeout = aiohttp.ClientTimeout(total=30)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(image_url) as resp:
-                        if resp.status != 200:
-                            logger.error(
-                                f"群 {group_id} 下载图片失败：status={resp.status}"
-                            )
-                            image_bytes = None
-                        else:
-                            max_bytes = 10 * 1024 * 1024  # 10MB
-                            image_bytes = await resp.read()
-                            if len(image_bytes) > max_bytes:
-                                logger.error(f"图片太大：{len(image_bytes)}")
-                                image_bytes = None
-            except Exception as e:
-                logger.error(f"群 {group_id} 下载图片失败：{e}")
-                image_bytes = None
+                image_path = Path(image_source)
+                is_local_file = await asyncio.to_thread(image_path.is_file)
+            except (OSError, ValueError):
+                is_local_file = False
+
+            if is_local_file:
+                try:
+                    file_size = await asyncio.to_thread(image_path.stat)
+                    if file_size.st_size > max_bytes:
+                        logger.error(f"Image exceeds 10MB limit: {file_size.st_size}")
+                    else:
+                        image_bytes = await asyncio.to_thread(image_path.read_bytes)
+                except Exception as e:
+                    logger.error(f"Failed to read local image for room {group_id}: {e}")
+            elif image_source.startswith(("http://", "https://")):
+                try:
+                    timeout = aiohttp.ClientTimeout(total=30)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.get(image_source) as resp:
+                            if resp.status != 200:
+                                logger.error(
+                                    f"Failed to download image for room {group_id}: "
+                                    f"status={resp.status}"
+                                )
+                            elif (
+                                resp.content_length and resp.content_length > max_bytes
+                            ):
+                                logger.error(
+                                    f"Image exceeds 10MB limit: {resp.content_length}"
+                                )
+                            else:
+                                payload = bytearray()
+                                async for chunk in resp.content.iter_chunked(64 * 1024):
+                                    if len(payload) + len(chunk) > max_bytes:
+                                        logger.error(
+                                            "Image download exceeds 10MB limit"
+                                        )
+                                        payload.clear()
+                                        break
+                                    payload.extend(chunk)
+                                if payload:
+                                    image_bytes = bytes(payload)
+                except Exception as e:
+                    logger.error(f"Failed to download image for room {group_id}: {e}")
+            else:
+                logger.error(
+                    f"Invalid image source for room {group_id}: {image_source!r}"
+                )
 
             if image_bytes:
+                if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                    content_type = "image/png"
+                    filename = "report.png"
+                    display_name = "Daily Report.png"
+                elif image_bytes.startswith(b"\xff\xd8\xff"):
+                    content_type = "image/jpeg"
+                    filename = "report.jpg"
+                    display_name = "Daily Report.jpg"
+                else:
+                    logger.error(
+                        f"Rendered image for room {group_id} is not PNG or JPEG"
+                    )
+                    return False
                 for client in clients:
                     try:
                         if hasattr(client, "upload_file") and hasattr(
@@ -761,10 +862,14 @@ class AutoScheduler:
                         ):
                             upload_resp = await client.upload_file(
                                 image_bytes,
-                                "image/png",
-                                "report.png",
+                                content_type,
+                                filename,
                             )
-                            content_uri = upload_resp.get("content_uri")
+                            content_uri = (
+                                upload_resp.get("content_uri")
+                                if isinstance(upload_resp, dict)
+                                else None
+                            )
                             if content_uri:
                                 # Send Text First
                                 await client.send_message(
@@ -778,7 +883,7 @@ class AutoScheduler:
                                     "m.room.message",
                                     {
                                         "msgtype": "m.image",
-                                        "body": "Daily Report.png",
+                                        "body": display_name,
                                         "url": content_uri,
                                     },
                                 )
@@ -787,19 +892,23 @@ class AutoScheduler:
                     except Exception as e:
                         logger.error(f"Matrix 图片发送失败：{e}")
 
-            logger.error(f"❌ 群 {group_id} 图片发送失败，回退到文本")
-            await self._send_text_message(
-                group_id,
-                f"{prefix_text}\n图片发送失败，请查看链接：\n{image_url}",
-            )
+            logger.error(f"❌ Image delivery failed for room {group_id}")
             return False
 
         except Exception as e:
             logger.error(f"发送图片消息到群 {group_id} 失败：{e}")
             return False
 
-    async def _send_text_message(self, group_id: str, text_content: str):
-        """发送文本消息到群 - 仅支持 Matrix"""
+    async def _send_text_message(self, group_id: str, text_content: str) -> bool:
+        """Send a text message to a Matrix room.
+
+        Args:
+            group_id: Target Matrix room ID.
+            text_content: Text body to send.
+
+        Returns:
+            Whether a Matrix client sent the message.
+        """
         try:
             clients = await self._resolve_matrix_clients(
                 group_id,
@@ -827,8 +936,16 @@ class AutoScheduler:
             logger.error(f"发送文本消息到群 {group_id} 失败：{e}")
             return False
 
-    async def _send_pdf_file(self, group_id: str, pdf_path: str):
-        """发送 PDF 文件到群 - 仅支持 Matrix"""
+    async def _send_pdf_file(self, group_id: str, pdf_path: str) -> bool:
+        """Send a PDF file to a Matrix room.
+
+        Args:
+            group_id: Target Matrix room ID.
+            pdf_path: Local PDF file path.
+
+        Returns:
+            Whether a Matrix client uploaded and sent the PDF.
+        """
         try:
             clients = await self._resolve_matrix_clients(
                 group_id,
@@ -838,7 +955,7 @@ class AutoScheduler:
                 return False
 
             try:
-                pdf_data = Path(pdf_path).read_bytes()
+                pdf_data = await asyncio.to_thread(Path(pdf_path).read_bytes)
             except Exception as e:
                 logger.error(f"读取 PDF 文件失败：{e}")
                 return False
@@ -855,7 +972,11 @@ class AutoScheduler:
                             "application/pdf",
                             "report.pdf",
                         )
-                        content_uri = upload_resp.get("content_uri")
+                        content_uri = (
+                            upload_resp.get("content_uri")
+                            if isinstance(upload_resp, dict)
+                            else None
+                        )
                         if content_uri:
                             # Send Text First
                             await client.send_message(
@@ -919,7 +1040,10 @@ class AutoScheduler:
         clients = []
         seen_client_ids: set[int] = set()
         for platform_id, bot_instance in available_platforms:
-            if not self.bot_manager.is_matrix_platform_id(platform_id) or bot_instance is None:
+            if (
+                not self.bot_manager.is_matrix_platform_id(platform_id)
+                or bot_instance is None
+            ):
                 continue
             if hasattr(
                 self.bot_manager, "is_plugin_enabled"

@@ -180,7 +180,7 @@
           "max_tokens": {
             "type": "int",
             "description": "（兼容部分提供商）用户称号分析最大 Token 数",
-            "default": 12288,
+            "default": 4096,
             "hint": "（兼容部分提供商，实测大部分模型调整后没有明显效果）用户称号分析时 LLM 能生成的最大 token 数量。当分析内容较多或者分析提示词复杂时，建议适当调大此值以保证输出质量。"
           },
           "provider_id": {
@@ -225,7 +225,7 @@
           "max_tokens": {
             "type": "int",
             "description": "（兼容部分提供商）金句分析最大 Token 数",
-            "default": 12288,
+            "default": 4096,
             "hint": "（兼容部分提供商，实测大部分模型调整后没有明显效果）金句分析时 LLM 能生成的最大 token 数量。当分析内容较多或者分析提示词复杂时，建议适当调大此值以保证输出质量。"
           },
           "provider_id": {
@@ -265,7 +265,7 @@
           "max_tokens": {
             "type": "int",
             "description": "对话投票最大 Token 数",
-            "default": 12288,
+            "default": 400,
             "hint": "控制 LLM 响应长度，通常 300~800 区间"
           },
           "max_options": {
@@ -298,13 +298,13 @@
           "max_tokens": {
             "type": "int",
             "description": "个人报告最大 Token 数",
-            "default": 32767,
+            "default": 800,
             "hint": "控制 LLM 响应长度，个人报告通常较短，建议 500~1000"
           },
           "max_messages": {
             "type": "int",
             "description": "分析的最大消息数",
-            "default": 1000,
+            "default": 100,
             "hint": "用于 LLM 分析的用户消息数量上限，过多可能导致 token 超限"
           },
           "prompts": {
@@ -344,9 +344,9 @@
       },
       "retries": {
         "type": "int",
-        "description": "LLM 请求重试次数",
+        "description": "LLM 首次请求失败后的额外重试次数",
         "default": 2,
-        "hint": "当请求超时或失败时自动重试的次数，建议设置为 1~3 之间。"
+        "hint": "首次请求不计入此数值；设为 0 仍会执行一次请求，建议设置为 1~3。"
       },
       "backoff": {
         "type": "int",

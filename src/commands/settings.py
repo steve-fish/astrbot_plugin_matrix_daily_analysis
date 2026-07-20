@@ -48,9 +48,7 @@ class SettingsHandler:
 
     async def list_templates(self) -> list[str]:
         """获取可用模板列表"""
-        template_base_dir = os.path.join(
-            self.plugin_dir, "src", "reports", "templates"
-        )
+        template_base_dir = os.path.join(self.plugin_dir, "src", "reports", "templates")
 
         def _list_templates_sync():
             if os.path.exists(template_base_dir):
@@ -84,9 +82,7 @@ class SettingsHandler:
         self, template_input: str, available_templates: list[str]
     ) -> tuple[bool, str]:
         """设置模板"""
-        template_base_dir = os.path.join(
-            self.plugin_dir, "src", "reports", "templates"
-        )
+        template_base_dir = os.path.join(self.plugin_dir, "src", "reports", "templates")
 
         # 判断输入是序号还是模板名称
         template_name = template_input
@@ -95,7 +91,10 @@ class SettingsHandler:
             if 1 <= index <= len(available_templates):
                 template_name = available_templates[index - 1]
             else:
-                return False, f"❌ 无效的序号 '{template_input}'，有效范围：1-{len(available_templates)}"
+                return (
+                    False,
+                    f"❌ 无效的序号 '{template_input}'，有效范围：1-{len(available_templates)}",
+                )
 
         # 检查模板是否存在
         template_dir = os.path.join(template_base_dir, template_name)

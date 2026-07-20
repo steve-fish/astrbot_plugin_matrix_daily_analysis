@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -28,15 +29,17 @@ class ReportGenerator:
         生成图片格式的分析报告
 
         Returns:
-            tuple[str | None, str | None]: (image_url, html_content)
-            - image_url: 生成的图片 URL，如果生成失败则为 None
+            tuple[str | None, str | None]: (image_source, html_content)
+            - image_source: Rendered local image path, or None on failure.
             - html_content: 生成的 HTML 内容，如果渲染失败但 HTML 生成成功，则返回此内容供重试
         """
         html_content = None
         try:
             # 准备渲染数据
             render_payload = await self._prepare_render_data(
-                analysis_result, chart_template="activity_chart.html", avatar_getter=avatar_getter
+                analysis_result,
+                chart_template="activity_chart.html",
+                avatar_getter=avatar_getter,
             )
 
             # 先渲染 HTML 模板（使用异步方法）
@@ -97,7 +100,7 @@ class ReportGenerator:
                     image_url = await html_render_func(
                         html_content,  # 渲染后的 HTML 内容
                         {},  # 空数据字典，因为数据已包含在 HTML 中
-                        True,  # return_url=True，返回 URL 而不是下载文件
+                        False,  # Download once and upload the local rendered file.
                         image_options,
                     )
 
@@ -132,14 +135,29 @@ class ReportGenerator:
 
             # 生成文件名
             current_date = datetime.now().strftime("%Y%m%d")
-            filename = self.config_manager.get_pdf_filename_format().format(
-                group_id=group_id, date=current_date
-            )
+            filename_template = self.config_manager.get_pdf_filename_format()
+            try:
+                filename = filename_template.format(
+                    group_id=group_id, date=current_date
+                )
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as e:
+                logger.warning(f"Invalid PDF filename template; using fallback: {e}")
+                filename = f"群聊分析报告_{group_id}_{current_date}.pdf"
+            # The Matrix room ID contains ':' and user templates may contain path
+            # separators. Keep the report inside its data directory on every OS.
+            filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(filename)).strip()
+            filename = filename.rstrip(". ") or f"群聊分析报告_{current_date}.pdf"
+            if not filename.lower().endswith(".pdf"):
+                filename += ".pdf"
+            if len(filename) > 180:
+                filename = f"{filename[:176].rstrip()}.pdf"
             pdf_path = output_dir / filename
 
             # 准备渲染数据
             render_data = await self._prepare_render_data(
-                analysis_result, chart_template="activity_chart_pdf.html", avatar_getter=avatar_getter
+                analysis_result,
+                chart_template="activity_chart_pdf.html",
+                avatar_getter=avatar_getter,
             )
             logger.info(f"PDF 渲染数据准备完成，包含 {len(render_data)} 个字段")
 
@@ -215,7 +233,10 @@ class ReportGenerator:
         return report
 
     async def _prepare_render_data(
-        self, analysis_result: dict, chart_template: str = "activity_chart.html", avatar_getter=None
+        self,
+        analysis_result: dict,
+        chart_template: str = "activity_chart.html",
+        avatar_getter=None,
     ) -> dict:
         """准备渲染数据"""
         stats = analysis_result["statistics"]
@@ -265,7 +286,9 @@ class ReportGenerator:
         quotes_list = []
         for quote in stats.golden_quotes[:max_golden_quotes]:
             avatar_url = (
-                await self._get_user_avatar(str(quote.matrix), avatar_getter) if quote.matrix else None
+                await self._get_user_avatar(str(quote.matrix), avatar_getter)
+                if quote.matrix
+                else None
             )
             quotes_list.append(
                 {
@@ -336,8 +359,6 @@ class ReportGenerator:
             result = result.replace(placeholder, str(value))
 
         # 检查是否还有未替换的占位符
-        import re
-
         if remaining_placeholders := re.findall(r"\{\{[^}]+\}\}", result):
             logger.warning(
                 f"未替换的占位符 ({len(remaining_placeholders)}个): {remaining_placeholders[:10]}"
@@ -464,9 +485,6 @@ class ReportGenerator:
 
                 if executable_path:
                     launch_kwargs["executable_path"] = executable_path
-                    launch_kwargs["channel"] = (
-                        "chrome" if "chrome" in executable_path.lower() else "msedge"
-                    )
 
                 try:
                     if executable_path:

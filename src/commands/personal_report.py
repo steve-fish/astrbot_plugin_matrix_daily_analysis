@@ -35,7 +35,8 @@ class PersonalReportHandler:
 
             # 提取用户消息内容用于 LLM 分析
             message_texts = []
-            for msg in messages[:max_messages]:
+            # History is chronological; retain the newest configured sample window.
+            for msg in messages[-max_messages:]:
                 if not isinstance(msg, dict):
                     continue
                 message_items = msg.get("message", [])

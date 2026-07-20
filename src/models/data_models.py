@@ -58,7 +58,9 @@ class EmojiStatistics:
     bface_count: int = 0  # 超级表情数量
     sface_count: int = 0  # 小表情数量
     other_emoji_count: int = 0  # 其他表情数量
-    face_details: dict = field(default_factory=dict)  # 具体表情 ID 统计 {face_id: count}
+    face_details: dict = field(
+        default_factory=dict
+    )  # 具体表情 ID 统计 {face_id: count}
 
     @property
     def total_emoji_count(self) -> int:
